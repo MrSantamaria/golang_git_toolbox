@@ -15,8 +15,11 @@ import (
 
 	"github.com/google/go-github/github"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"golang.org/x/oauth2"
 )
+
+var dryRun bool // Flag to indicate whether it's a dry run
 
 var rootCmd = &cobra.Command{
 	Use:   "github",
@@ -48,6 +51,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// Parse the dry-run flag
+	dryRun = viper.GetBool("dry-run")
+
+	// Keep track of the created pull requests
+	var createdPRs []string
 
 	// Use the parsed configuration data as needed
 	for _, config := range configs {
@@ -98,11 +107,17 @@ func main() {
 			continue
 		}
 
-		// Create a pull request
-		err = createPullRequest(ctx, client, owner, repo, tempFile.Name(), config.Repo)
+		// Create a pull request (passing dry-run flag)
+		err = createPullRequest(ctx, client, owner, repo, tempFile.Name(), config.Repo, dryRun, &createdPRs)
 		if err != nil {
 			log.Printf("Error creating pull request: %v\n", err)
 		}
+	}
+
+	// Print the list of created pull requests and their count
+	fmt.Printf("\n%d Pull Request(s) created:\n", len(createdPRs))
+	for _, prURL := range createdPRs {
+		fmt.Println(prURL)
 	}
 }
 
@@ -117,7 +132,7 @@ func writeToFile(filePath, content string) error {
 	return err
 }
 
-func createPullRequest(ctx context.Context, client *github.Client, owner, repo, filePath, repoURL string) error {
+func createPullRequest(ctx context.Context, client *github.Client, owner, repo, filePath, repoURL string, dryRun bool, createdPRs *[]string) error {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return err
@@ -134,7 +149,7 @@ func createPullRequest(ctx context.Context, client *github.Client, owner, repo, 
 	_, _, err = client.Git.CreateRef(ctx, owner, repo, &github.Reference{
 		Ref: &ref,
 		Object: &github.GitObject{
-			SHA: baseRef.Commit.SHA,
+			SHA: github.String(baseRef.Commit.GetSHA()), // Fix here
 		},
 	})
 	if err != nil {
@@ -159,7 +174,7 @@ func createPullRequest(ctx context.Context, client *github.Client, owner, repo, 
 		Tree:    tree,
 		Parents: []github.Commit{
 			{
-				SHA: baseRef.Commit.SHA,
+				SHA: github.String(baseRef.Commit.GetSHA()), // Fix here
 			},
 		},
 	})
@@ -178,6 +193,11 @@ func createPullRequest(ctx context.Context, client *github.Client, owner, repo, 
 		return err
 	}
 
+	if dryRun {
+		fmt.Println("Dry-run mode: Pull request not created.")
+		return nil
+	}
+
 	// Create a new pull request
 	pr, _, err := client.PullRequests.Create(ctx, owner, repo, &github.NewPullRequest{
 		Title: github.String("Update configuration"),
@@ -189,6 +209,8 @@ func createPullRequest(ctx context.Context, client *github.Client, owner, repo, 
 		return err
 	}
 
-	fmt.Printf("Pull request created: %s\n", pr.GetHTMLURL())
+	prURL := pr.GetHTMLURL()
+	*createdPRs = append(*createdPRs, prURL)
+	fmt.Printf("Pull request created: %s\n", prURL)
 	return nil
 }
