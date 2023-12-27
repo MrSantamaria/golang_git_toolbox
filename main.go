@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"git_pr_maker/cmd"
 	local_helpers "git_pr_maker/pkg/local"
+	"io/ioutil"
 	"log"
+	"net/url"
 	"os"
 	"path"
+	"strings"
+	"time"
 
 	"github.com/google/go-github/github"
 	"github.com/spf13/cobra"
@@ -29,17 +33,13 @@ func main() {
 	cmd.InitEnv(rootCmd)
 
 	// Your GitHub personal access token
-	accessToken := "your-access-token"
+	accessToken := ""
 
 	// Create a GitHub client
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: accessToken})
 	tc := oauth2.NewClient(ctx, ts)
 	client := github.NewClient(tc)
-
-	// Your GitHub username and repository
-	owner := "your-username"
-	repo := "your-repository"
 
 	templateyamlpath := "tmp/testfile.yml"
 	repotxtpath := "tmp/repos.txt"
@@ -51,7 +51,15 @@ func main() {
 
 	// Use the parsed configuration data as needed
 	for _, config := range configs {
+		// Extract the owner and repo from the repository URL
+		repoURL, err := url.Parse(config.Repo)
+		if err != nil {
+			log.Printf("Error parsing repository URL %s: %v\n", config.Repo, err)
+			continue
+		}
+		pathSegments := strings.Split(repoURL.Path, "/")
 		fmt.Printf("Repo: %s, Tier: %d\n", config.Repo, config.Tier)
+
 		output, err := local_helpers.ReadFile(templateyamlpath)
 		if err != nil {
 			fmt.Println(err)
@@ -59,22 +67,42 @@ func main() {
 
 		fmt.Println(output)
 
+		if len(pathSegments) < 3 {
+			log.Printf("Invalid repository URL %s\n", config.Repo)
+			continue
+		}
+
+		owner := pathSegments[1] // Assuming the second segment is the owner
+		repo := pathSegments[2]  // Assuming the third segment is the repository name
+
+		// Use ioutil.TempFile to create a temporary file with a recognizable prefix
+		tempFile, err := ioutil.TempFile("", "config_*.yaml")
+		if err != nil {
+			log.Printf("Error creating temporary file: %v\n", err)
+			continue
+		}
+
+		defer func() {
+			// Close and delete the temporary file when done, log any errors
+			tempFile.Close()
+			if err := os.Remove(tempFile.Name()); err != nil {
+				log.Printf("Error deleting temporary file %s: %v\n", tempFile.Name(), err)
+			}
+		}()
+
 		template := local_helpers.GenerateOpsLevelTemplate(output, config)
 
-		// Write the YAML content to a file
-		outputFilePath := path.Join("path/to/output", fmt.Sprintf("%s.yaml", config.Repo))
-		err = writeToFile(outputFilePath, template)
+		err = writeToFile(tempFile.Name(), template)
 		if err != nil {
-			log.Printf("Error writing to file %s: %v\n", outputFilePath, err)
+			log.Printf("Error writing to file %s: %v\n", tempFile.Name(), err)
 			continue
 		}
 
 		// Create a pull request
-		err = createPullRequest(ctx, client, owner, repo, outputFilePath, config.Repo)
+		err = createPullRequest(ctx, client, owner, repo, tempFile.Name(), config.Repo)
 		if err != nil {
 			log.Printf("Error creating pull request: %v\n", err)
 		}
-
 	}
 }
 
@@ -95,13 +123,18 @@ func createPullRequest(ctx context.Context, client *github.Client, owner, repo, 
 		return err
 	}
 
+	// Get the SHA of the default branch (e.g., main)
+	baseRef, _, err := client.Repositories.GetBranch(ctx, owner, repo, "main")
+	if err != nil {
+		return err
+	}
+
 	// Create a new branch
-	ref := "refs/heads/update-config"
-	baseRef := "main"
+	ref := fmt.Sprintf("refs/heads/update-config-%d", time.Now().UnixNano())
 	_, _, err = client.Git.CreateRef(ctx, owner, repo, &github.Reference{
 		Ref: &ref,
 		Object: &github.GitObject{
-			SHA: github.String(baseRef),
+			SHA: baseRef.Commit.SHA,
 		},
 	})
 	if err != nil {
@@ -109,7 +142,7 @@ func createPullRequest(ctx context.Context, client *github.Client, owner, repo, 
 	}
 
 	// Create a new commit
-	tree, _, err := client.Git.CreateTree(ctx, owner, repo, baseRef, []github.TreeEntry{
+	tree, _, err := client.Git.CreateTree(ctx, owner, repo, baseRef.Commit.GetSHA(), []github.TreeEntry{
 		{
 			Path:    github.String(path.Base(filePath)),
 			Mode:    github.String("100644"),
@@ -117,7 +150,6 @@ func createPullRequest(ctx context.Context, client *github.Client, owner, repo, 
 			Content: github.String(string(content)),
 		},
 	})
-
 	if err != nil {
 		return err
 	}
@@ -127,7 +159,7 @@ func createPullRequest(ctx context.Context, client *github.Client, owner, repo, 
 		Tree:    tree,
 		Parents: []github.Commit{
 			{
-				SHA: github.String(baseRef),
+				SHA: baseRef.Commit.SHA,
 			},
 		},
 	})
@@ -150,7 +182,7 @@ func createPullRequest(ctx context.Context, client *github.Client, owner, repo, 
 	pr, _, err := client.PullRequests.Create(ctx, owner, repo, &github.NewPullRequest{
 		Title: github.String("Update configuration"),
 		Head:  github.String(ref),
-		Base:  github.String(baseRef),
+		Base:  github.String("main"),
 		Body:  github.String("Automated configuration update"),
 	})
 	if err != nil {
