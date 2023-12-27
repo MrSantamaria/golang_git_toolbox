@@ -2,57 +2,52 @@ package main
 
 import (
 	"fmt"
-	"os"
+	"git_pr_maker/cmd"
+	local_helpers "git_pr_maker/pkg/local"
+	"log"
 
-	"github.com/MrSantamaria/git_pr_maker/cmd"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "acceptance_test",
-	Short: "acceptance_test is a component of the Hypershift Operator Promotion process",
-	Long:  `acceptance_test is a tool used to validate Hypershift Operator Promotions ocurred successfully`,
+	Use:   "github",
+	Short: "github is a personal tool used to automate GitHub tasks",
+	Long:  `github is a personal tool used to automate GitHub tasks`,
 	Run: func(cmd *cobra.Command, args []string) {
-		var errs []error
-		var err error
+		//var errs []error
+		//var err error
 
-		err = workflows.SetUp(viper.GetString("token"), viper.GetString("environment"))
-		if err != nil {
-			fmt.Println(err)
-			errs = append(errs, err)
-		}
-
-		err = workflows.AcceptanceTest()
-		if err != nil {
-			fmt.Println(err)
-			errs = append(errs, err)
-		}
-
-		err = workflows.CleanUp()
-		if err != nil {
-			fmt.Println(err)
-			errs = append(errs, err)
-		}
-
-		if len(errs) > 0 {
-			fmt.Printf("Acceptance Test FAILED for: %s %s environment: %s selectors: %v\n",
-				viper.GetString("operator"),
-				viper.GetString("imagetag"),
-				viper.GetString("environment"),
-				viper.GetStringSlice("selectors"))
-			os.Exit(1)
-		}
 	},
 }
 
 func main() {
 	cmd.InitEnv(rootCmd)
 
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+	templateyamlpath := "tmp/testfile.yml"
+	repotxtpath := "tmp/repos.txt"
+
+	configs, err := local_helpers.ParseConfigFile(repotxtpath)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	os.Exit(0)
+	// Use the parsed configuration data as needed
+	for _, config := range configs {
+		fmt.Printf("Repo: %s, Tier: %d\n", config.Repo, config.Tier)
+		output, err := local_helpers.ReadFile(templateyamlpath)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		fmt.Println(output)
+
+		local_helpers.GenerateOpsLevelTemplate(output, config)
+	}
+
+	//output = local_helpers.ReplaceTemplateValues(output, map[string]string{
+	//	"test": "test",
+	//})
+
+	//fmt.Println(output)
+
 }

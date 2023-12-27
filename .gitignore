@@ -8,6 +8,12 @@
 *.so
 *.dylib
 
+# VSCode
+.vscode
+
+# tmp folder
+tmp
+
 # Test binary, built with `go test -c`
 *.test
 
