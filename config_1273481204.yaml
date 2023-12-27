@@ -1,0 +1,8 @@
+---
+version: 1
+service:
+  name: golang_git_toolbox
+  tier: tier_3
+  alias:
+  - github.com/golang_git_toolbox
+  description: golang git toolbox
