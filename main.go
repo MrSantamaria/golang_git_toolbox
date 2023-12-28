@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,78 +39,52 @@ func main() {
 
 	// Your GitHub personal access token
 	accessToken := ""
+	templateyamlpath := "tmp/testfile.yml"
+	repotxtpath := "tmp/repos.txt"
+	dryRun = viper.GetBool("dry-run")
+	var createdPRs []string
 
-	// Create a GitHub client
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: accessToken})
 	tc := oauth2.NewClient(ctx, ts)
 	client := github.NewClient(tc)
-
-	templateyamlpath := "tmp/testfile.yml"
-	repotxtpath := "tmp/repos.txt"
 
 	configs, err := local_helpers.ParseConfigFile(repotxtpath)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Parse the dry-run flag
-	dryRun = viper.GetBool("dry-run")
-
-	// Keep track of the created pull requests
-	var createdPRs []string
-
-	// Use the parsed configuration data as needed
 	for _, config := range configs {
-		// Extract the owner and repo from the repository URL
-		repoURL, err := url.Parse(config.Repo)
+		// Clone the repository
+		localRepoPath, err := cloneRepo(config.Repo, accessToken)
 		if err != nil {
-			log.Printf("Error parsing repository URL %s: %v\n", config.Repo, err)
+			log.Printf("Error cloning repository %s: %v\n", config.Repo, err)
 			continue
 		}
-		pathSegments := strings.Split(repoURL.Path, "/")
-		fmt.Printf("Repo: %s, Tier: %d\n", config.Repo, config.Tier)
+
+		defer os.RemoveAll(localRepoPath) // Clean up after processing
 
 		output, err := local_helpers.ReadFile(templateyamlpath)
 		if err != nil {
-			fmt.Println(err)
+			log.Fatal(err)
 		}
 
-		fmt.Println(output)
-
-		if len(pathSegments) < 3 {
-			log.Printf("Invalid repository URL %s\n", config.Repo)
-			continue
-		}
-
-		owner := pathSegments[1] // Assuming the second segment is the owner
-		repo := pathSegments[2]  // Assuming the third segment is the repository name
-
-		// Use ioutil.TempFile to create a temporary file with a recognizable prefix
-		tempFile, err := ioutil.TempFile("", "config_*.yaml")
-		if err != nil {
-			log.Printf("Error creating temporary file: %v\n", err)
-			continue
-		}
-
-		defer func() {
-			// Close and delete the temporary file when done, log any errors
-			tempFile.Close()
-			if err := os.Remove(tempFile.Name()); err != nil {
-				log.Printf("Error deleting temporary file %s: %v\n", tempFile.Name(), err)
-			}
-		}()
-
+		filePath := filepath.Join(localRepoPath, "config.yaml")
 		template := local_helpers.GenerateOpsLevelTemplate(output, config)
 
-		err = writeToFile(tempFile.Name(), template)
+		err = writeToFile(filePath, template)
 		if err != nil {
-			log.Printf("Error writing to file %s: %v\n", tempFile.Name(), err)
+			log.Printf("Error writing to file %s: %v\n", filePath, err)
 			continue
 		}
 
-		// Create a pull request (passing dry-run flag)
-		err = createPullRequest(ctx, client, owner, repo, tempFile.Name(), config.Repo, dryRun, &createdPRs)
+		if err := commitAndPushChanges(localRepoPath, config, accessToken); err != nil {
+			log.Printf("Error committing and pushing changes for repository %s: %v\n", config.Repo, err)
+			continue
+		}
+
+		owner, repo := extractOwnerAndRepo(config.Repo)
+		err = createPullRequest(ctx, client, owner, repo, filePath, config.Repo, dryRun, &createdPRs)
 		if err != nil {
 			log.Printf("Error creating pull request: %v\n", err)
 		}
@@ -213,4 +189,77 @@ func createPullRequest(ctx context.Context, client *github.Client, owner, repo, 
 	*createdPRs = append(*createdPRs, prURL)
 	fmt.Printf("Pull request created: %s\n", prURL)
 	return nil
+}
+
+// Clone the repository and return the path to the local clone
+func cloneRepo(repoURL, accessToken string) (string, error) {
+	// Define the local path for the cloned repo
+	tempDir, err := ioutil.TempDir("", "repo-clone-*")
+	if err != nil {
+		return "", err
+	}
+
+	// Construct the git clone command
+	cmd := exec.Command("git", "clone", repoURL, tempDir)
+	// Add other necessary setup for the command, such as setting environment variables for access tokens
+
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	return tempDir, nil
+}
+
+// Commit and push the changes to the repository
+func commitAndPushChanges(localRepoPath string, config local_helpers.RepositoryConfig, accessToken string) error {
+	// Change directory to the local repository path
+	if err := os.Chdir(localRepoPath); err != nil {
+		return err
+	}
+
+	// Git add, commit, and push commands
+	// You need to handle potential errors for each command
+	addCmd := exec.Command("git", "add", ".")
+	commitCmd := exec.Command("git", "commit", "-m", "Update configuration")
+	pushCmd := exec.Command("git", "push", "origin", "HEAD")
+
+	// Execute the commands
+	if err := addCmd.Run(); err != nil {
+		return err
+	}
+	if err := commitCmd.Run(); err != nil {
+		return err
+	}
+	if err := pushCmd.Run(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// extractOwnerAndRepo extracts the owner and repo name from a GitHub repository URL.
+func extractOwnerAndRepo(repoURL string) (string, string) {
+	parsedURL, err := url.Parse(repoURL)
+	if err != nil {
+		// Handle the error as appropriate
+		return "", ""
+	}
+
+	// Split the path into segments
+	pathSegments := strings.Split(parsedURL.Path, "/")
+
+	// Ensure there are at least two segments for owner and repo
+	if len(pathSegments) < 3 {
+		// Handle the error or invalid URL format
+		return "", ""
+	}
+
+	// The owner and repo are usually the first and second segments of the path
+	owner := pathSegments[1]
+	repo := pathSegments[2]
+
+	// Remove any .git extension from the repo name
+	repo = strings.TrimSuffix(repo, ".git")
+
+	return owner, repo
 }
