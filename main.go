@@ -101,7 +101,8 @@ func main() {
 		}
 
 		// Wait for 3 minutes before processing the next repository
-		time.Sleep(1 * time.Minute)
+		fmt.Println("Waiting for 30 seconds before processing the next repository...")
+		time.Sleep(30 * time.Second)
 	}
 
 	// Print the list of created pull requests and their count
