@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -109,75 +108,18 @@ func writeToFile(filePath, content string) error {
 }
 
 func createPullRequest(ctx context.Context, client *github.Client, owner, repo, branchName, filePath, repoURL string, dryRun bool, createdPRs *[]string) error {
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		return err
-	}
 
-	// Get the SHA of the default branch (e.g., main)
-	baseRef, _, err := client.Repositories.GetBranch(ctx, owner, repo, "main")
-	if err != nil {
-		return err
-	}
-
-	// Create a new branch
-	ref := fmt.Sprintf("refs/heads/update-config-%d", time.Now().UnixNano())
-	_, _, err = client.Git.CreateRef(ctx, owner, repo, &github.Reference{
-		Ref: &ref,
-		Object: &github.GitObject{
-			SHA: github.String(baseRef.Commit.GetSHA()), // Fix here
-		},
-	})
-	if err != nil {
-		return err
-	}
-
-	// Create a new commit
-	tree, _, err := client.Git.CreateTree(ctx, owner, repo, baseRef.Commit.GetSHA(), []github.TreeEntry{
-		{
-			Path:    github.String(path.Base(filePath)),
-			Mode:    github.String("100644"),
-			Type:    github.String("blob"),
-			Content: github.String(string(content)),
-		},
-	})
-	if err != nil {
-		return err
-	}
-
-	commit, _, err := client.Git.CreateCommit(ctx, owner, repo, &github.Commit{
-		Message: github.String("Update configuration"),
-		Tree:    tree,
-		Parents: []github.Commit{
-			{
-				SHA: github.String(baseRef.Commit.GetSHA()), // Fix here
-			},
-		},
-	})
-	if err != nil {
-		return err
-	}
-
-	// Create a new branch reference for the commit
-	_, _, err = client.Git.UpdateRef(ctx, owner, repo, &github.Reference{
-		Ref: github.String(ref),
-		Object: &github.GitObject{
-			SHA: commit.SHA,
-		},
-	}, false)
-	if err != nil {
-		return err
-	}
+	// No need to create a new branch reference, as it's already done in commitAndPushChanges
 
 	if dryRun {
 		fmt.Println("Dry-run mode: Pull request not created.")
 		return nil
 	}
 
-	// Create a new pull request
+	// Create a new pull request using the existing branch
 	pr, _, err := client.PullRequests.Create(ctx, owner, repo, &github.NewPullRequest{
 		Title: github.String("Update configuration"),
-		Head:  github.String(ref),
+		Head:  github.String(branchName), // Use the existing branch name
 		Base:  github.String("main"),
 		Body:  github.String("Automated configuration update"),
 	})
