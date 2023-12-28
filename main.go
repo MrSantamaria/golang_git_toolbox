@@ -38,7 +38,7 @@ func main() {
 	cmd.InitEnv(rootCmd)
 
 	// Your GitHub personal access token
-	accessToken := ""
+	accessToken := "" // Replace with your actual access token
 	templateyamlpath := "tmp/testfile.yml"
 	repotxtpath := "tmp/repos.txt"
 	dryRun = viper.GetBool("dry-run")
@@ -54,19 +54,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Store the original working directory
-	originalWD, err := os.Getwd()
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	for _, config := range configs {
-		// Reset working directory at the start of each loop iteration
-		if err := os.Chdir(originalWD); err != nil {
-			log.Printf("Error resetting working directory: %v\n", err)
-			continue
-		}
-
 		localRepoPath, err := cloneRepo(config.Repo, accessToken)
 		if err != nil {
 			log.Printf("Error cloning repository %s: %v\n", config.Repo, err)
@@ -89,20 +77,17 @@ func main() {
 			continue
 		}
 
-		if err := commitAndPushChanges(localRepoPath, config, accessToken); err != nil {
+		branchName, err := commitAndPushChanges(localRepoPath, config, accessToken) // Now returns the branch name
+		if err != nil {
 			log.Printf("Error committing and pushing changes for repository %s: %v\n", config.Repo, err)
 			continue
 		}
 
 		owner, repo := extractOwnerAndRepo(config.Repo)
-		err = createPullRequest(ctx, client, owner, repo, filePath, config.Repo, dryRun, &createdPRs)
+		err = createPullRequest(ctx, client, owner, repo, branchName, filePath, config.Repo, dryRun, &createdPRs)
 		if err != nil {
 			log.Printf("Error creating pull request: %v\n", err)
 		}
-
-		// Wait for 3 minutes before processing the next repository
-		fmt.Println("Waiting for 30 seconds before processing the next repository...")
-		time.Sleep(30 * time.Second)
 	}
 
 	// Print the list of created pull requests and their count
@@ -123,7 +108,7 @@ func writeToFile(filePath, content string) error {
 	return err
 }
 
-func createPullRequest(ctx context.Context, client *github.Client, owner, repo, filePath, repoURL string, dryRun bool, createdPRs *[]string) error {
+func createPullRequest(ctx context.Context, client *github.Client, owner, repo, branchName, filePath, repoURL string, dryRun bool, createdPRs *[]string) error {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return err
@@ -225,36 +210,48 @@ func cloneRepo(repoURL, accessToken string) (string, error) {
 	return tempDir, nil
 }
 
-func commitAndPushChanges(localRepoPath string, config local_helpers.RepositoryConfig, accessToken string) error {
+func commitAndPushChanges(localRepoPath string, config local_helpers.RepositoryConfig, accessToken string) (string, error) {
 	// Change directory to the local repository path
 	if err := os.Chdir(localRepoPath); err != nil {
-		return err
+		return "", err
 	}
 
-	// Create and switch to a new branch
+	// Define a unique branch name
 	branchName := fmt.Sprintf("update-config-%d", time.Now().UnixNano())
-	createBranchCmd := exec.Command("git", "checkout", "-b", branchName)
-	if output, err := createBranchCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git checkout failed: %v, output: %s", err, output)
+
+	// Check if the branch already exists
+	checkBranchCmd := exec.Command("git", "rev-parse", "--verify", branchName)
+	if err := checkBranchCmd.Run(); err != nil { // Branch does not exist
+		// Create and switch to a new branch
+		createBranchCmd := exec.Command("git", "checkout", "-b", branchName)
+		if output, err := createBranchCmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("git checkout failed: %v, output: %s", err, string(output))
+		}
+	} else {
+		// Switch to the existing branch
+		switchBranchCmd := exec.Command("git", "checkout", branchName)
+		if output, err := switchBranchCmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("git checkout failed: %v, output: %s", err, string(output))
+		}
 	}
 
 	// Add, commit, and push changes
 	addCmd := exec.Command("git", "add", "config.yaml")
-	commitCmd := exec.Command("git", "commit", "-m", "Update configuration")
-	pushCmd := exec.Command("git", "push", "-u", "origin", branchName)
-
-	// Execute the commands and check for errors
 	if output, err := addCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git add failed: %v, output: %s", err, output)
-	}
-	if output, err := commitCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git commit failed: %v, output: %s", err, output)
-	}
-	if output, err := pushCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git push failed: %v, output: %s", err, output)
+		return "", fmt.Errorf("git add failed: %v, output: %s", err, string(output))
 	}
 
-	return nil
+	commitCmd := exec.Command("git", "commit", "-m", "Update configuration")
+	if output, err := commitCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git commit failed: %v, output: %s", err, string(output))
+	}
+
+	pushCmd := exec.Command("git", "push", "-u", "origin", branchName)
+	if output, err := pushCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git push failed: %v, output: %s", err, string(output))
+	}
+
+	return branchName, nil
 }
 
 // extractOwnerAndRepo extracts the owner and repo name from a GitHub repository URL.
