@@ -54,8 +54,19 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Store the original working directory
+	originalWD, err := os.Getwd()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	for _, config := range configs {
-		// Clone the repository
+		// Reset working directory at the start of each loop iteration
+		if err := os.Chdir(originalWD); err != nil {
+			log.Printf("Error resetting working directory: %v\n", err)
+			continue
+		}
+
 		localRepoPath, err := cloneRepo(config.Repo, accessToken)
 		if err != nil {
 			log.Printf("Error cloning repository %s: %v\n", config.Repo, err)
@@ -210,28 +221,33 @@ func cloneRepo(repoURL, accessToken string) (string, error) {
 	return tempDir, nil
 }
 
-// Commit and push the changes to the repository
 func commitAndPushChanges(localRepoPath string, config local_helpers.RepositoryConfig, accessToken string) error {
 	// Change directory to the local repository path
 	if err := os.Chdir(localRepoPath); err != nil {
 		return err
 	}
 
-	// Git add, commit, and push commands
-	// You need to handle potential errors for each command
-	addCmd := exec.Command("git", "add", ".")
-	commitCmd := exec.Command("git", "commit", "-m", "Update configuration")
-	pushCmd := exec.Command("git", "push", "origin", "HEAD")
+	// Create and switch to a new branch
+	branchName := fmt.Sprintf("update-config-%d", time.Now().UnixNano())
+	createBranchCmd := exec.Command("git", "checkout", "-b", branchName)
+	if output, err := createBranchCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git checkout failed: %v, output: %s", err, output)
+	}
 
-	// Execute the commands
-	if err := addCmd.Run(); err != nil {
-		return err
+	// Add, commit, and push changes
+	addCmd := exec.Command("git", "add", "config.yaml")
+	commitCmd := exec.Command("git", "commit", "-m", "Update configuration")
+	pushCmd := exec.Command("git", "push", "-u", "origin", branchName)
+
+	// Execute the commands and check for errors
+	if output, err := addCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git add failed: %v, output: %s", err, output)
 	}
-	if err := commitCmd.Run(); err != nil {
-		return err
+	if output, err := commitCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git commit failed: %v, output: %s", err, output)
 	}
-	if err := pushCmd.Run(); err != nil {
-		return err
+	if output, err := pushCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git push failed: %v, output: %s", err, output)
 	}
 
 	return nil
