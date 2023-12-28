@@ -99,6 +99,9 @@ func main() {
 		if err != nil {
 			log.Printf("Error creating pull request: %v\n", err)
 		}
+
+		// Wait for 3 minutes before processing the next repository
+		time.Sleep(3 * time.Minute)
 	}
 
 	// Print the list of created pull requests and their count
